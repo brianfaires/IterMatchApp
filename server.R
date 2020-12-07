@@ -6,7 +6,8 @@ library(ggplot2)
 library(reshape2)
 library(ipc)
 library(future)
-plan(multicore)
+plan(multisession) # Works in windows
+#plan(multicore) # Not supported in windows
 
 # Define server logic required to draw a histogram
 shinyServer(function(input, output, session) {
@@ -34,8 +35,7 @@ shinyServer(function(input, output, session) {
     # Queue for multi-process executiong and real time graph updating
     queue <- shinyQueue()
     queue$consumer$start(1000) # Execute signals every 1000 milliseconds
-    
-    
+
     # Set flag when file is uploaded; for conditionalPanel in UI
     output$fileUploaded <- reactive({ return(!is.null(input$input_file)) })
     outputOptions(output, 'fileUploaded', suspendWhenHidden=FALSE)
@@ -117,17 +117,30 @@ shinyServer(function(input, output, session) {
         numRows = nrow(rawData)
         allCandidates <- list()
         
+        firstPick = NULL
         for(i in 1:length(allVarNames)) {
             uniques <- length(unique(rawData[,allVarNames[[i]]]))
             if(uniques == numRows) {
                 allCandidates <- c(allCandidates, allVarNames[[i]])
+                if(is.null(firstPick)) {
+                    # See if any entries are not integers
+                    for(j in 1:length(rawData[,allVarNames[[i]]])) {
+                        entry = rawData[j, allVarNames[[i]]]
+                        if(!is.integer(entry) && !grepl("^[0-9]{1,}$", entry)) {
+                            firstPick = allVarNames[[i]]
+                        }
+                    }
+                }
             }
         }
         if(length(allCandidates) == 0) {
             output$errorText = renderText("No valid label variables found. A unique value is required for each data row.")
         }
-        else {
+        else if(is.null(firstPick)) {
             updateSelectInput(session, "labelVar", choices = allCandidates, selected = allCandidates[[1]])
+        }
+        else {
+            updateSelectInput(session, "labelVar", choices = allCandidates, selected = firstPick)
         }
     })
 
@@ -182,10 +195,7 @@ shinyServer(function(input, output, session) {
 
     # Set checkboxes for including/excluding vars
     observeEvent(sansResponse(), {
-        output$checkboxes <- renderUI({
-            #choice_list <- withoutLabel[withoutLabel != input$responseVar] # omit the response variable from the list
-            checkboxGroupInput("checkboxes", "Included Variables:", choices = sansResponse(), selected = sansResponse())
-        })
+        output$checkboxes <- renderUI({ checkboxGroupInput("checkboxes", "Included Variables:", choices = sansResponse(), selected = sansResponse()) })
     })
     
     # List of vars included in data analysis (excluding label and response)
@@ -200,7 +210,7 @@ shinyServer(function(input, output, session) {
         
         selected_list <- list()
         for(i in 1:length(choice_list)) {
-            if(length(unique(rawData[,choice_list[[i]]])) < 20 || is.character(rawData[,choice_list[[i]]])) {
+            if(is.factor(rawData[,choice_list[[i]]]) || length(unique(rawData[,choice_list[[i]]])) < 20 || is.character(rawData[,choice_list[[i]]])) {
                 selected_list <- c(selected_list, choice_list[[i]])
             }
         }
@@ -297,7 +307,8 @@ shinyServer(function(input, output, session) {
         shinyjs::disable("btnLaunch1")
         shinyjs::disable("btnLaunch2")
         
-        dissMatrix$data <- GenerateDissMatrix(cleanedData(), formula(), input$nTrees, surrogates = input$surrogates, outputfile = NULL, displayProgressTracking = TRUE)
+        dissMatrix$data <- GenerateDissMatrix(cleanedData(), formula(), input$nTrees, surrogates = input$surrogates, iseed = 1, outputfile = NULL, displayProgressTracking = TRUE)
+        gc() # Cleanup memory from GenerateDissMatrix()
         
         shinyjs::enable("input_file")
         shinyjs::enable("downloadData")
@@ -311,6 +322,7 @@ shinyServer(function(input, output, session) {
     allResultsReactive <- reactiveVal()
     iterMatchComplete <- reactiveVal()
 
+    inter = NULL;
     # Launch iterMatch on button press; using ipc package to keep UI updating as this runs
     observeEvent(input$btnLaunch2, {
         shinyjs::disable("input_file")
@@ -332,18 +344,25 @@ shinyServer(function(input, output, session) {
         # Calc max iterations
         maxProgress <- min(table(cleanData[[input$responseVar]])) - MIN_GROUP_SIZE
         futureTimer <- AsyncProgress$new(message = "Launching iterMatch...", min=0, max=maxProgress)
-        
-        future({
-            # Disable results of any previous runs
-            queue$producer$fireAssignReactive("iterMatchComplete", FALSE) # Signal completion
-            
-            # async call to iterMatch outside of reactive context
-            iterMatch(cleanData, form, dissData, labelVar, smdVals, smdMet, asyncTimer = futureTimer, iseed = 1)
-            
-            futureTimer$close()
-            queue$producer$fireAssignReactive("iterMatchComplete", TRUE) # Signal completion
-        })
 
+            parallelProcess <- future({
+                queue$producer$fireAssignReactive("iterMatchComplete", FALSE) # Signal no completion in case this is being re-executed
+                
+                # async call to iterMatch outside of reactive context
+                
+                iterMatch(cleanData, form, dissData, labelVar, smdVals, smdMet, asyncTimer = futureTimer)
+                
+                futureTimer$close()
+                
+                queue$producer$fireAssignReactive("iterMatchComplete", TRUE) # Signal completion
+                
+                #quit() # Use with plan(multisession)
+            })
+
+        rm(cleanData)
+        rm(form)
+        rm(dissData)
+        gc()
         NULL # Ensure that nothing is returned
     })
 
@@ -407,7 +426,7 @@ shinyServer(function(input, output, session) {
         iterRes = results[[iterNum]]
         
         strHeader = paste("----- Results for Iteration", iterNum, "-----", sep=" ")
-        strGroupSize = paste("Final Group Size =", length(iterRes$matches$ID)/2, sep=" ")
+        strGroupSize = paste("Group Size =", length(iterRes$matches$ID)/2, sep=" ")
         
         strVars = paste("Matched Variables:", paste(iterRes$varname, collapse=","), sep=",")
         strThresholds = paste("SMD Thresholds:", paste(smdValues(), collapse=","), sep=",")
@@ -433,8 +452,8 @@ shinyServer(function(input, output, session) {
         negatives <- allIDs[1:(length(allIDs)/2)]
         positives <- allIDs[(length(allIDs)/2 + 1):length(allIDs)]
         
-        strNeg = paste("Negatives", paste(negatives, collapse=","), sep=",")
-        strPos = paste("Positives", paste(positives, collapse=","), sep=",")
+        strNeg = paste("Group1", paste(negatives, collapse=","), sep=",")
+        strPos = paste("Group2", paste(positives, collapse=","), sep=",")
         fileResults = paste(strHeader, strGroupSize, "", strVars, strThresholds, "", strSMD, strPval, "",
                             "The following lists are ordered to reflect the matched pairs", strNeg, strPos,sep="\n")
         return(fileResults)
@@ -479,13 +498,16 @@ shinyServer(function(input, output, session) {
     ##### Generate a dynamic list of the pairs #####
     output$iterationResults <- renderTable({
         results <- allResultsReactive()
+        
+        if(input$iterationNumber <= 0 || input$iterationNumber > length(results)) { return(NULL) } # Sanity checks
+
         thisResult = results[[input$iterationNumber]]
         allIDs <- thisResult$matches$ID
-        negatives <- allIDs[1:(length(allIDs)/2)]
-        positives <- allIDs[(length(allIDs)/2 + 1):length(allIDs)]
+        Group1 <- allIDs[1:(length(allIDs)/2)]
+        Group2 <- allIDs[(length(allIDs)/2 + 1):length(allIDs)]
         
-        df = as.data.frame(negatives)
-        df$positives <- positives
+        df = as.data.frame(Group1)
+        df$Group2 <- Group2
         return(df)
     })
     
@@ -559,56 +581,13 @@ shinyServer(function(input, output, session) {
 #'  methodSMD = "method-1", surrogates = T, outputfile = "output")
 #'@author Afrooz Jahedi, Tristan Hills
 
-
-    ################## Original iterMatch() was broken into the following two subroutines, which were then updated to work with Shiny. ################## 
-    
-    #'@title A 1-1 iterative optimal matching algorithm for data with missing values
-    #'@description Creates a 1-1 matched sample between two groups. After building a
-    #'  distance matrix based on random forest and dealing with missing values using surrogate splits, it
-    #'  uses a matching method called "OPTMATCH" to select subset of subjects that are
-    #'  matched using desirable balance threshold.
-    #'@param data Dataframe of subjects and variables
-    #'@param formula Formula which defines the response and matched variables
-    #'  Matching variables have to be separated by "+", and response varaible is
-    #'  separated by"~"
-    #'@param nTree An integer number of trees in the random forest
-    #'@param distance Claculating distance between two subjects i and j. Possible
-    #'  values is "0-1" distance where distance of subjects in the same
-    #'  terminal nodes are set to be zero, one, otherewise.
-    #'@param ID Unique subject ID
-    #'@param thresh A vector of real values defining in SMD threshold for matching
-    #'  variables in the order that they appear in formula
-    #'@param methodSMD Two methods are proposed to calculate SMD, "method-1" and
-    #'  "method-2"
-    #'@param surrogates Creates surrogate splits if set to TRUE, otherwise the
-    #'  default is FALSE
-    #'@param rfmtry Number of random variables to split at each node. The default
-    #'   value is set to 3
-    #'@param match.tol Specifies the extent to which fullmatch's output is
-    #'  permitted to differ from an optimal solution to the original problem. This
-    #'  parameteris taken from tol in \code{\link[optmatch]{fullmatch}}
-    #'@param outputfile An output file containing results from all itterations and their balance measures
-    #'@return List Contains p-values and standardized mean difference for each variable after
-    #'  creating paired sample matching in multiple iterations and matched sample
-    #'@import dplyr optmatch partykit rlist stddiff
-    #'@export iterMatch
-    #'@usage iterMatch (data, formula, nTree,distance = c("0-1","p-value"),
-    #'   ID, thresh,methodSMD = c("method-1", "method-2"), surrogates = FALSE,
-    #'   rfmtry = 3, match.tol = 0.001, outputfile = NULL)
-    #'@examples form <-DX_GROUP ~ RMSD + AGE_AT_SCAN + PIQ + SEX + HANDEDNESS_SCORES
-    #'  iterMatch (data = data_1, formula = form, nTree = 100,
-    #'  distance = "p-value", ID = "SUB_ID", thresh = c(0.1, 0.1, 0.1, 0.1, 0.1),
-    #'  methodSMD = "method-1", surrogates = T, outputfile = "output")
-    #'@author Afrooz Jahedi, Tristan Hills
-    
-    
-    
     GenerateDissMatrix <-
         function (data,
                   formula,
                   nTree,
                   rfmtry = 3,
                   surrogates = FALSE,
+                  iseed = 1,
                   outputfile = NULL,
                   displayProgressTracking = FALSE) {
             
@@ -681,8 +660,10 @@ shinyServer(function(input, output, session) {
             
             S = list()
             for (i in 1:length(selVars)) {
-                S[[i]] = summaryMatch(selData, names(selVars)[i], response)
-                allVarsSummary <- c(S, S[[i]])
+                tryCatch( expr = {
+                    S[[i]] = summaryMatch(selData, names(selVars)[i], response)
+                    allVarsSummary <- c(S, S[[i]])
+                })
             }
             
             VarName <- sapply(S, function(x) x$varname)
@@ -807,7 +788,6 @@ shinyServer(function(input, output, session) {
                   thresh,
                   methodSMD,
                   match.tol = 0.001,
-                  iseed = NULL,
                   outputfile = "output.txt",
                   asyncTimer = NULL) {
             
@@ -821,6 +801,7 @@ shinyServer(function(input, output, session) {
             
             #Form dataframe using variables from the formula and response variable
             selData <- data[, all.vars(formula)]
+            rm(data)
             selVars <- selData[, !names(selData) %in% response, drop = F]
             
             ptm <- proc.time()
@@ -892,7 +873,7 @@ shinyServer(function(input, output, session) {
                 print("Add subject ID data ...")
                 # Add a column of subject ID to the data
                 SelDataID <- data.frame(selData, SUB_ID = rownames(selData))
-                
+
                 print("Merge data frame of matching variables ...")
                 # Merge dataframes of all matching variables, pair number by Unique subject ID
                 optData <- merge(SelDataID, splitSubjMem, by = "SUB_ID")
@@ -910,8 +891,10 @@ shinyServer(function(input, output, session) {
                 print("Calculate sample balance")
                 S = list()
                 for (i in 1:length(selVars)) {
-                    S[[i]] = summaryMatch(optData, names(selVars)[i], response)
-                    allVarsSummary <- c(S, S[[i]])
+                    tryCatch( expr = {
+                        S[[i]] = summaryMatch(optData, names(selVars)[i], response)
+                        allVarsSummary <- c(S, S[[i]])
+                    })
                 }
                 VarName <- sapply(S, function(x) x$varname)
                 SMD <- lapply(S, function(x) x$smd)
@@ -919,7 +902,7 @@ shinyServer(function(input, output, session) {
                 formattedSummaryPrint(VarName, SMD, Pvalue)
                 
                 results <- list()
-                results$matches <- cbind(data.frame(ID = a), selData[a, ])
+                results$matches <- cbind(data.frame(ID = a))
                 results$varname <- VarName
                 results$smd <- SMD
                 results$pvalue <- Pvalue
@@ -927,7 +910,7 @@ shinyServer(function(input, output, session) {
                 # build aggregated lists from all iterations
                 allResults[[1]] = results
                 queue$producer$fireAssignReactive("allResultsReactive", allResults) # Using ipc to update graph as iterMatch runs
-                
+
                 # check SMD threshold
                 condition <- rep(FALSE, length(thresh))
                 for (i in 1:length(S)) {
@@ -954,6 +937,8 @@ shinyServer(function(input, output, session) {
                         # Retrive the distance between the matched treated vs control subjects
                         # if (NROW(selData[ASD,]) < NROW(selData[!ASD,])) {
                         distance <- NULL
+                    
+                    gc() # clean up data from last iteration
                     
                     groupSize <- table(optData[, response])[1]
                     
@@ -987,6 +972,7 @@ shinyServer(function(input, output, session) {
                     
                     # The remained subjects from smaller group
                     remainedASD <- as.character(allMatchSubj[allMatchSubj != excSubj])
+                    rm(allMatchSubj)
                     
                     # print(remainedASD)
                     
@@ -1051,8 +1037,10 @@ shinyServer(function(input, output, session) {
                     # Calc the balance of the matched sample
                     S = list()
                     for (i in 1:length(selVars)) {
-                        S[[i]] = summaryMatch(optimData, names(selVars)[i], response)
-                        allVarsSummary <- c(S, S[[i]])
+                        tryCatch( expr = {
+                            S[[i]] = summaryMatch(selData[rownames(optData),], names(selVars)[i], response)
+                            allVarsSummary <- c(S, S[[i]])
+                        })
                     }
                     
                     
@@ -1062,7 +1050,7 @@ shinyServer(function(input, output, session) {
                     formattedSummaryPrint(varName, SMD, pvalue)
                     
                     results <- list()
-                    results$matches <- cbind(data.frame(ID=a), selData[a, ])
+                    results$matches <- cbind(data.frame(ID=a))
                     results$varname <- varName
                     results$smd <- SMD
                     results$pvalue <- pvalue
@@ -1134,7 +1122,7 @@ shinyServer(function(input, output, session) {
                 # Merging selected matched data with the original data to create matched dataframe
                 optData <-
                     merge(splitSubjMem, SelDataID, by = "SUB_ID")
-                
+
                 # Sorting data based on group
                 optData <-
                     (optData[order(optData[, response], decreasing = F),])
@@ -1149,9 +1137,16 @@ shinyServer(function(input, output, session) {
                 #=== Tabling pvalues and SMD for output ====
                 S = list()
                 for (i in 1:length(selVars)) {
-                    S[[i]] = summaryNonMissingPair(optData, response, names(selVars)[i])
-                    allVarsSummary <-
-                        c(S, S[[i]])
+                    tryCatch( # When method-2 throws an error, use method-1
+                        expr =  { S[[i]] = summaryNonMissingPair(optData, response, names(selVars)[i])
+                                  allVarsSummary <- c(S, S[[i]])
+                                },
+                        error = { tryCatch( 
+                                    expr = { S[[i]] = summaryMatch(optData, names(selVars)[i], response) 
+                                            allVarsSummary <- c(S, S[[i]])
+                                    })
+                                } 
+                    )
                 }
                 VarName <- sapply( S, function(x) x$varname )
                 SMD <- lapply(S, function(x) x$smd)
@@ -1194,6 +1189,7 @@ shinyServer(function(input, output, session) {
                         #and control subjects.?
                         distance <- NULL
                     
+                    gc() # Clean up data from last iteration
                     
                     asyncTimer$set(message="Iterations: ", detail=iteration, value=iteration)
                     
@@ -1225,10 +1221,11 @@ shinyServer(function(input, output, session) {
                     remainedASD <-
                         as.character(allMatchSubj[allMatchSubj != excSubj])
                     print(remainedASD)
+                    rm(allMatchSubj)
                     
                     #trimed distance matrix of remaining treated and original control subjs
                     trimedDM <- DM[remainedASD, ]
-                    
+
                     #Redo the optimal matching
                     optMatch <-
                         fullmatch(
@@ -1292,9 +1289,16 @@ shinyServer(function(input, output, session) {
                     S <- list()
                     allVarsSummary <- list()
                     for (i in 1:length(selVars)) {
-                        S[[i]] = summaryNonMissingPair(optData, response, names(selVars)[i])
-                        allVarsSummary <-
-                            c(allVarsSummary, S[[i]])
+                        tryCatch( # When method-2 throws an error, use method-1
+                            expr =  { S[[i]] = summaryNonMissingPair(optData, response, names(selVars)[i])
+                            allVarsSummary <- c(S, S[[i]])
+                            },
+                            error = { tryCatch( 
+                                expr = { S[[i]] = summaryMatch(optData, names(selVars)[i], response) 
+                                allVarsSummary <- c(S, S[[i]])
+                                })
+                            } 
+                        )
                     }
                     
                     
@@ -1305,7 +1309,7 @@ shinyServer(function(input, output, session) {
                     #==== Tabling pvalues and SMD after matching ====
                     
                     results <- list()
-                    results$matches <- cbind(data.frame(ID = a), selData[a, ])
+                    results$matches <- cbind(data.frame(ID = a))
                     results$varname <- varName
                     results$smd <- SMD
                     results$pvalue <- pvalue
