@@ -4,10 +4,7 @@ library(stddiff)
 library(partykit)
 library(ggplot2)
 library(reshape2)
-library(ipc)
-library(future)
-plan(multisession) # Works in windows
-#plan(multicore) # Not supported in windows
+options(max.print = 1000000)
 
 # Define server logic required to draw a histogram
 shinyServer(function(input, output, session) {
@@ -32,10 +29,6 @@ shinyServer(function(input, output, session) {
     MIN_GROUP_SIZE = 5
     
     
-    # Queue for multi-process executiong and real time graph updating
-    queue <- shinyQueue()
-    queue$consumer$start(1000) # Execute signals every 1000 milliseconds
-
     # Set flag when file is uploaded; for conditionalPanel in UI
     output$fileUploaded <- reactive({ return(!is.null(input$input_file)) })
     outputOptions(output, 'fileUploaded', suspendWhenHidden=FALSE)
@@ -48,30 +41,9 @@ shinyServer(function(input, output, session) {
     output$algo2Started <- eventReactive(input$btnLaunch2, { return(TRUE) })
     outputOptions(output, 'algo2Started', suspendWhenHidden=FALSE)
 
-    output$algo2Complete <- reactive({ return(iterMatchComplete()) })
+    output$algo2Complete <- reactive({ return(!is.null(allIterationData$results)) })
     outputOptions(output, 'algo2Complete', suspendWhenHidden=FALSE)
-    observeEvent(iterMatchComplete(), {
-        if(iterMatchComplete() == TRUE) {
-            # Load numericControl over results, which then populates the table of matched participants
-            numIters = length(allResultsReactive())
-            if(numIters > 0) {
-                updateNumericInput(session, "iterationNumber", max = numIters, value = numIters)
-            }
-            
-            # re-enable controls
-            shinyjs::enable("iterationNumber")
-            shinyjs::enable("input_file")
-            shinyjs::enable("downloadData")
-            shinyjs::enable("btnLaunch2")
-            shinyjs::enable("smdMethod")
-            shinyjs::enable("smdAll")
-            shinyjs::enable("smdThresholds")
-            shinyjs::enable("exportResults")
-            shinyjs::enable("exportAllResults")
-            shinyjs::enable("exportLog")
-        }
-    })
-    
+
     observeEvent(input$btnLaunch2, {
         shinyjs::disable("iterationNumber")
         shinyjs::disable("input_file")
@@ -318,13 +290,11 @@ shinyServer(function(input, output, session) {
     })
 
     ##### Run iterMatch on button press #####
-    # Storing results of iterMatch() in reactive context
-    allResultsReactive <- reactiveVal()
-    iterMatchComplete <- reactiveVal()
 
-    inter = NULL;
-    # Launch iterMatch on button press; using ipc package to keep UI updating as this runs
+    # Launch iterMatch on button press
+    allIterationData <- reactiveValues(results = NULL)
     observeEvent(input$btnLaunch2, {
+        allIterationData$results <- NULL
         shinyjs::disable("input_file")
         shinyjs::disable("downloadData")
         shinyjs::disable("btnLaunch2")
@@ -332,43 +302,31 @@ shinyServer(function(input, output, session) {
         shinyjs::disable("smdAll")
         shinyjs::disable("smdThresholds")
         
+        allIterationData$results <- iterMatch(cleanedData(), formula(), dissMatrix$data, input$labelVar, smdValues(), input$smdMethod)
         updateTabsetPanel(session, "tabPanel", selected = "Results")
-
-        cleanData <- cleanedData()
-        form <- formula()
-        dissData <- dissMatrix$data
-        labelVar <- input$labelVar
-        smdVals <- smdValues()
-        smdMet <- input$smdMethod
+        updateNumericInput(session, "iterationNumber", max = length(allIterationData$results), value = length(allIterationData$results))
+        # Load numericControl over results, which then populates the table of matched participants
+        numIters = length(allIterationData$results)
+        if(numIters > 0) {
+            updateNumericInput(session, "iterationNumber", max = numIters, value = numIters)
+        }
         
-        # Calc max iterations
-        maxProgress <- min(table(cleanData[[input$responseVar]])) - MIN_GROUP_SIZE
-        futureTimer <- AsyncProgress$new(message = "Launching iterMatch...", min=0, max=maxProgress)
-
-            parallelProcess <- future({
-                queue$producer$fireAssignReactive("iterMatchComplete", FALSE) # Signal no completion in case this is being re-executed
-                
-                # async call to iterMatch outside of reactive context
-                
-                iterMatch(cleanData, form, dissData, labelVar, smdVals, smdMet, asyncTimer = futureTimer)
-                
-                futureTimer$close()
-                
-                queue$producer$fireAssignReactive("iterMatchComplete", TRUE) # Signal completion
-                
-                #quit() # Use with plan(multisession)
-            })
-
-        rm(cleanData)
-        rm(form)
-        rm(dissData)
-        gc()
-        NULL # Ensure that nothing is returned
+        # re-enable controls
+        shinyjs::enable("iterationNumber")
+        shinyjs::enable("input_file")
+        shinyjs::enable("downloadData")
+        shinyjs::enable("btnLaunch2")
+        shinyjs::enable("smdMethod")
+        shinyjs::enable("smdAll")
+        shinyjs::enable("smdThresholds")
+        shinyjs::enable("exportResults")
+        shinyjs::enable("exportAllResults")
+        shinyjs::enable("exportLog")
     })
 
     # All SMD values from all iterations run
     allSmds <- reactive({
-        allResults <- allResultsReactive()
+        allResults <- allIterationData$results
         if(is.null(allResults)) { return(NULL) }
         
         blFirst <- 0
@@ -422,7 +380,7 @@ shinyServer(function(input, output, session) {
 
     ##### Generates the text summary for a given iteration
     iterationTextResults <- function(iterNum) {
-        results = allResultsReactive()
+        results = allIterationData$results
         iterRes = results[[iterNum]]
         
         strHeader = paste("----- Results for Iteration", iterNum, "-----", sep=" ")
@@ -497,7 +455,7 @@ shinyServer(function(input, output, session) {
 
     ##### Generate a dynamic list of the pairs #####
     output$iterationResults <- renderTable({
-        results <- allResultsReactive()
+        results <- allIterationData$results
         
         if(input$iterationNumber <= 0 || input$iterationNumber > length(results)) { return(NULL) } # Sanity checks
 
@@ -526,7 +484,7 @@ shinyServer(function(input, output, session) {
         filename = function() { return("AllIterations.csv") },
         content = function(file) {
             resultsContent = ""
-            for(i in 1:length(allResultsReactive())) {
+            for(i in 1:length(allIterationData$results)) {
                 resultsContent = paste(resultsContent, iterationTextResults(i), "\n\n", sep="")
             }
             writeLines(resultsContent, file)
@@ -661,8 +619,8 @@ shinyServer(function(input, output, session) {
             S = list()
             for (i in 1:length(selVars)) {
                 tryCatch( expr = {
-                    S[[i]] = summaryMatch(selData, names(selVars)[i], response)
-                    allVarsSummary <- c(S, S[[i]])
+                                  S[[i]] = summaryMatch(selData, names(selVars)[i], response)
+                                  allVarsSummary <- c(S, S[[i]])
                 })
             }
             
@@ -788,8 +746,7 @@ shinyServer(function(input, output, session) {
                   thresh,
                   methodSMD,
                   match.tol = 0.001,
-                  outputfile = "output.txt",
-                  asyncTimer = NULL) {
+                  outputfile = "output.txt") {
             
             iterNum = 1
             allSmds <- list()
@@ -909,7 +866,6 @@ shinyServer(function(input, output, session) {
                 
                 # build aggregated lists from all iterations
                 allResults[[1]] = results
-                queue$producer$fireAssignReactive("allResultsReactive", allResults) # Using ipc to update graph as iterMatch runs
 
                 # check SMD threshold
                 condition <- rep(FALSE, length(thresh))
@@ -929,7 +885,10 @@ shinyServer(function(input, output, session) {
                 # While the condition is not satisfied do
                 print("Starting the while loop ...")
                 
-                asyncTimer$set(message="Iterations: ", detail=iteration, value=1)
+                maxProgress <- (table(optData[, response])[1]) - MIN_GROUP_SIZE
+                progress <- shiny::Progress$new(min=0, max=maxProgress)
+                on.exit(progress$close())
+                progress$set(message="Iterations: ", detail=iteration, value=1)
                 
                 while (prodCondition == 0) {
                     if (prodCondition == 0)
@@ -942,7 +901,7 @@ shinyServer(function(input, output, session) {
                     
                     groupSize <- table(optData[, response])[1]
                     
-                    asyncTimer$set(message="Iterations: ", detail=iteration, value=iteration)
+                    progress$set(message="Iterations: ", detail=iteration, value=iteration)
                     
                     print(groupSize)
                     print("groupSize")
@@ -1058,8 +1017,7 @@ shinyServer(function(input, output, session) {
                     
                     # build aggregated lists from all iterations
                     allResults[[iteration]] = results
-                    queue$producer$fireAssignReactive("allResultsReactive", allResults) # Using ipc to update graph as iterMatch runs
-                    
+
                     # Check SMD thresholds
                     condition <- rep(FALSE, length(thresh))
                     for (i in 1:length(S)) {
@@ -1139,13 +1097,13 @@ shinyServer(function(input, output, session) {
                 for (i in 1:length(selVars)) {
                     tryCatch( # When method-2 throws an error, use method-1
                         expr =  { S[[i]] = summaryNonMissingPair(optData, response, names(selVars)[i])
-                                  allVarsSummary <- c(S, S[[i]])
-                                },
+                        allVarsSummary <- c(S, S[[i]])
+                        },
                         error = { tryCatch( 
-                                    expr = { S[[i]] = summaryMatch(optData, names(selVars)[i], response) 
-                                            allVarsSummary <- c(S, S[[i]])
-                                    })
-                                } 
+                            expr = { S[[i]] = summaryMatch(optData, names(selVars)[i], response) 
+                            allVarsSummary <- c(S, S[[i]])
+                            })
+                        } 
                     )
                 }
                 VarName <- sapply( S, function(x) x$varname )
@@ -1161,7 +1119,6 @@ shinyServer(function(input, output, session) {
                 
                 # build aggregated lists from all iterations
                 allResults[[1]] = results
-                queue$producer$fireAssignReactive("allResultsReactive", allResults) # Using ipc to update graph as iterMatch runs
                 
                 # check SMD threshold which is a list
                 condition <- rep(FALSE, length(thresh))
@@ -1179,7 +1136,9 @@ shinyServer(function(input, output, session) {
                 iteration <- 1
                 cat(iteration, "iteration" , sep = "-", "\n")
                 
-                asyncTimer$set(message="Iterations: ", detail=iteration, value=1)
+                maxProgress <- (table(optData[, response])[1]) - MIN_GROUP_SIZE
+                progress <- shiny::Progress$new(min=0, max=maxProgress)
+                on.exit(progress$close())
                 
                 #prodCondition==0
                 while (prodCondition == 0) {
@@ -1191,7 +1150,7 @@ shinyServer(function(input, output, session) {
                     
                     gc() # Clean up data from last iteration
                     
-                    asyncTimer$set(message="Iterations: ", detail=iteration, value=iteration)
+                    progress$set(message="Iterations: ", detail=iteration, value=iteration)
                     
                     groupSize <- (table(optData[, response])[1])
                     print(groupSize)
@@ -1317,8 +1276,7 @@ shinyServer(function(input, output, session) {
                     
                     # build aggregated lists from all iterations
                     allResults[[iteration]] = results
-                    queue$producer$fireAssignReactive("allResultsReactive", allResults) # Using ipc to update graph as iterMatch runs
-                    
+
                     
                     # check SMD threshold
                     condition <- rep(FALSE, length(thresh))

@@ -7,10 +7,11 @@ options(shiny.maxRequestSize = 1*1024^3)
 # Define UI for application that draws a histogram
 shinyUI(fluidPage(
     shinyjs::useShinyjs(),
-    titlePanel("IterMatchApp", windowTitle = "IterMatch Shiny App"),
+    titlePanel("IterMatchApp (Basic)", windowTitle = "IterMatch Shiny App"),
     
     h4("An application for balancing confounding variables in observational studies."),
-    a("https://github.com/brianfaires/IterMatchApp/", href="https://github.com/brianfaires/IterMatchApp/"),
+    h5("This app is designed to run on <1 GB memory. Real-time plot updating is disabled."),
+    a("https://github.com/brianfaires/IterMatchAppBasic/", href="https://github.com/brianfaires/IterMatchAppBasic/"),
 
     hr(),
 
