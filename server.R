@@ -619,11 +619,13 @@ shinyServer(function(input, output, session) {
             S = list()
             for (i in 1:length(selVars)) {
                 tryCatch( expr = {
-                                  S[[i]] = summaryMatch(selData, names(selVars)[i], response)
-                                  allVarsSummary <- c(S, S[[i]])
+                    S[[i]] = summaryMatch(selData, names(selVars)[i], response)
+                    allVarsSummary <- c(S, S[[i]])
                 },
-                error=function(e){}
-                )
+                error=function(e){
+                    S[[i]] = NA
+                    allVarsSummary <- c(S, S[[i]])
+                })
             }
             
             VarName <- sapply(S, function(x) x$varname)
@@ -851,11 +853,12 @@ shinyServer(function(input, output, session) {
                 S = list()
                 for (i in 1:length(selVars)) {
                     tryCatch( expr = {
-                        S[[i]] = summaryMatch(optData, names(selVars)[i], response)
+                        S[[i]] = summaryMatch(optData, names(selVars)[i], response) 
+                        allVarsSummary <- c(S, S[[i]])},
+                    error=function(e){ 
+                        S[[i]] = NA
                         allVarsSummary <- c(S, S[[i]])
-                    },
-                    error=function(e){}
-                    )
+                    })
                 }
                 VarName <- sapply(S, function(x) x$varname)
                 SMD <- lapply(S, function(x) x$smd)
@@ -874,12 +877,15 @@ shinyServer(function(input, output, session) {
                 # check SMD threshold
                 condition <- rep(FALSE, length(thresh))
                 for (i in 1:length(S)) {
-                    x <- S[[i]]
-                    x_logic <- abs(x$smd) < thresh[i]
-                    x_logic <- x_logic[!is.na(x_logic)]
-                    if (all(x_logic)) {
-                        condition[i] <- TRUE
-                    }
+                    tryCatch(expr = {
+                        x <- S[[i]]
+                        x_logic <- abs(x$smd) < thresh[i]
+                        x_logic <- x_logic[!is.na(x_logic)]
+                        if (all(x_logic)) {
+                            condition[i] <- TRUE
+                        }
+                    },
+                    error = function(e) { condition[i] <- FALSE })
                 }
                 
                 prodCondition <- prod(condition)
@@ -1000,12 +1006,14 @@ shinyServer(function(input, output, session) {
                     # Calc the balance of the matched sample
                     S = list()
                     for (i in 1:length(selVars)) {
-                        tryCatch( expr = {
+                        tryCatch( expr = { 
                             S[[i]] = summaryMatch(selData[rownames(optData),], names(selVars)[i], response)
                             allVarsSummary <- c(S, S[[i]])
                         },
-                        error=function(e){}
-                        )
+                        error=function(e){ 
+                            S[[i]] = NA
+                            allVarsSummary <- c(S, S[[i]])
+                        })
                     }
                     
                     
@@ -1027,12 +1035,15 @@ shinyServer(function(input, output, session) {
                     # Check SMD thresholds
                     condition <- rep(FALSE, length(thresh))
                     for (i in 1:length(S)) {
-                        x <- S[[i]]
-                        x_logic <- abs(x$smd) < thresh[i]
-                        x_logic <- x_logic[!is.na(x_logic)]
-                        if (all(x_logic)) {
-                            condition[i] <- TRUE
-                        }
+                        tryCatch(expr = {
+                            x <- S[[i]]
+                            x_logic <- abs(x$smd) < thresh[i]
+                            x_logic <- x_logic[!is.na(x_logic)]
+                            if (all(x_logic)) {
+                                condition[i] <- TRUE
+                            }
+                        },
+                        error = function(e) { condition[i] <- FALSE })
                     }
                     prodCondition <- prod(condition)
                 }
@@ -1102,14 +1113,18 @@ shinyServer(function(input, output, session) {
                 S = list()
                 for (i in 1:length(selVars)) {
                     tryCatch( # When method-2 throws an error, use method-1
-                        expr =  { S[[i]] = summaryNonMissingPair(optData, response, names(selVars)[i])
-                                  allVarsSummary <- c(S, S[[i]])
+                        expr =  { 
+                            S[[i]] = summaryNonMissingPair(optData, response, names(selVars)[i])
+                            allVarsSummary <- c(S, S[[i]])
                         },
                         error = function(err) { tryCatch( 
-                            expr = { S[[i]] = summaryMatch(optData, names(selVars)[i], response) 
-                                     allVarsSummary <- c(S, S[[i]])
-                            })
-                        } 
+                            expr = { 
+                                S[[i]] = summaryMatch(optData, names(selVars)[i], response) 
+                                allVarsSummary <- c(S, S[[i]]) },
+                            error = function(e) { 
+                                S[[i]] = NA
+                                allVarsSummary <- c(S, S[[i]])}
+                        )}
                     )
                 }
                 VarName <- sapply( S, function(x) x$varname )
@@ -1129,12 +1144,15 @@ shinyServer(function(input, output, session) {
                 # check SMD threshold which is a list
                 condition <- rep(FALSE, length(thresh))
                 for (i in 1:length(S)) {
-                    x <- S[[i]]
-                    x_logic <- abs(x$smd) < thresh[i]
-                    x_logic <- x_logic[!is.na(x_logic)]
-                    if (all(x_logic)) {
-                        condition[i] <- TRUE
-                    }
+                    tryCatch(expr = {
+                        x <- S[[i]]
+                        x_logic <- abs(x$smd) < thresh[i]
+                        x_logic <- x_logic[!is.na(x_logic)]
+                        if (all(x_logic)) {
+                            condition[i] <- TRUE
+                        }
+                    },
+                    error = function(e) { condition[i] <- FALSE })
                 }
                 
                 prodCondition <- prod(condition)
@@ -1255,14 +1273,20 @@ shinyServer(function(input, output, session) {
                     allVarsSummary <- list()
                     for (i in 1:length(selVars)) {
                         tryCatch( # When method-2 throws an error, use method-1
-                            expr =  { S[[i]] = summaryNonMissingPair(optData, response, names(selVars)[i])
-                            allVarsSummary <- c(S, S[[i]])
+                            expr =  { 
+                                S[[i]] = summaryNonMissingPair(optData, response, names(selVars)[i])
+                                allVarsSummary <- c(S, S[[i]])
                             },
                             error = function(err) { tryCatch( 
-                                expr = { S[[i]] = summaryMatch(optData, names(selVars)[i], response) 
-                                allVarsSummary <- c(S, S[[i]])
-                                })
-                            } 
+                                expr = { 
+                                    S[[i]] = summaryMatch(optData, names(selVars)[i], response)
+                                    allVarsSummary <- c(S, S[[i]])
+                                },
+                                error = function(e) { 
+                                    S[[i]] = NA
+                                    allVarsSummary <- c(S, S[[i]])
+                                }
+                            )} 
                         )
                     }
                     
@@ -1287,12 +1311,15 @@ shinyServer(function(input, output, session) {
                     # check SMD threshold
                     condition <- rep(FALSE, length(thresh))
                     for (i in 1:length(S)) {
-                        x <- S[[i]]
-                        x_logic <- abs(x$smd) < thresh[i]
-                        x_logic <- x_logic[!is.na(x_logic)]
-                        if (all(x_logic)) {
-                            condition[i] <- TRUE
-                        }
+                        tryCatch( expr = {
+                            x <- S[[i]]
+                            x_logic <- abs(x$smd) < thresh[i]
+                            x_logic <- x_logic[!is.na(x_logic)]
+                            if (all(x_logic)) {
+                                condition[i] <- TRUE
+                            }
+                        },
+                        error = function(e) { condition[i] <- FALSE })
                     }
                     
                     prodCondition <- prod(condition)
