@@ -663,7 +663,9 @@ shinyServer(function(input, output, session) {
                 tryCatch( expr = {
                     S[[i]] = summaryMatch(selData, names(selVars)[i], response)
                     allVarsSummary <- c(S, S[[i]])
-                })
+                },
+                error=function(e){}
+                )
             }
             
             VarName <- sapply(S, function(x) x$varname)
@@ -894,7 +896,9 @@ shinyServer(function(input, output, session) {
                     tryCatch( expr = {
                         S[[i]] = summaryMatch(optData, names(selVars)[i], response)
                         allVarsSummary <- c(S, S[[i]])
-                    })
+                    },
+                    error=function(e){}
+                    )
                 }
                 VarName <- sapply(S, function(x) x$varname)
                 SMD <- lapply(S, function(x) x$smd)
@@ -1040,7 +1044,9 @@ shinyServer(function(input, output, session) {
                         tryCatch( expr = {
                             S[[i]] = summaryMatch(selData[rownames(optData),], names(selVars)[i], response)
                             allVarsSummary <- c(S, S[[i]])
-                        })
+                        },
+                        error=function(e){}
+                        )
                     }
                     
                     
@@ -1141,7 +1147,7 @@ shinyServer(function(input, output, session) {
                         expr =  { S[[i]] = summaryNonMissingPair(optData, response, names(selVars)[i])
                                   allVarsSummary <- c(S, S[[i]])
                                 },
-                        error = { tryCatch( 
+                        error = function(err) { tryCatch( 
                                     expr = { S[[i]] = summaryMatch(optData, names(selVars)[i], response) 
                                             allVarsSummary <- c(S, S[[i]])
                                     })
@@ -1293,7 +1299,7 @@ shinyServer(function(input, output, session) {
                             expr =  { S[[i]] = summaryNonMissingPair(optData, response, names(selVars)[i])
                             allVarsSummary <- c(S, S[[i]])
                             },
-                            error = { tryCatch( 
+                            error = function(err) { tryCatch( 
                                 expr = { S[[i]] = summaryMatch(optData, names(selVars)[i], response) 
                                 allVarsSummary <- c(S, S[[i]])
                                 })
