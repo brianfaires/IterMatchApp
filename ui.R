@@ -11,7 +11,7 @@ shinyUI(fluidPage(
     
     h4("An application for balancing confounding variables in observational studies."),
     h5("This app is designed to run on <1 GB memory. Real-time plot updating is disabled."),
-    a("https://github.com/brianfaires/IterMatchAppBasic/", href="https://github.com/brianfaires/IterMatchAppBasic/"),
+    a("https://github.com/brianfaires/IterMatchApp/tree/IterMatchAppBasic", href="https://github.com/brianfaires/IterMatchApp/tree/IterMatchAppBasic"),
 
     hr(),
 
